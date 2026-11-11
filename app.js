@@ -156,7 +156,8 @@ function resolvePlaylist(raw, sectionId){
 function newRow(){
   return { title: "", url: "", sectionId: presetFor.sectionId || "", sectionNew: "",
     playlistId: presetFor.playlistId || "", playlistNew: "",
-    statusId: fallbackStatus(), statusNew: "", collapsed: false, error: "" };
+    statusId: fallbackStatus(), statusNew: "", collapsed: false, error: "",
+    titleFetchStatus: "", titleFetchUrl: "", titleFetchToken: 0 };
 }
 // null = blank row (skipped), "" = valid, otherwise an error message
 function checkRow(r){
@@ -224,12 +225,59 @@ function picker(r, kind){
   }
   return wrap;
 }
+function youtubeVideoUrl(value){
+  try {
+    const url = new URL(value);
+    const host = url.hostname.toLowerCase();
+    if (host === "youtu.be" || host === "www.youtu.be"){
+      return url.pathname.split("/").filter(Boolean)[0] || "";
+    }
+    if (host !== "youtube.com" && host !== "www.youtube.com" && host !== "m.youtube.com") return "";
+    if (url.pathname === "/watch") return url.searchParams.get("v") || "";
+    const match = url.pathname.match(/^\/shorts\/([^/]+)/);
+    return match ? match[1] : "";
+  } catch (e) {
+    return "";
+  }
+}
+async function fetchYouTubeTitle(r, value){
+  const videoId = youtubeVideoUrl(value);
+  if (!videoId){
+    if (r.titleFetchStatus){ r.titleFetchToken++; r.titleFetchStatus = ""; r.titleFetchUrl = ""; render(); }
+    return;
+  }
+  if (normalize(r.title) || (r.titleFetchUrl === value && r.titleFetchStatus)) return;
+  const token = ++r.titleFetchToken;
+  r.titleFetchUrl = value;
+  r.titleFetchStatus = "Fetching title…";
+  render();
+  try {
+    const response = await fetch("https://www.youtube.com/oembed?format=json&url=" + encodeURIComponent(value));
+    if (!response.ok) throw new Error("YouTube title request failed.");
+    const data = await response.json();
+    if (token !== r.titleFetchToken || !addOpen || (single !== r && !bulkRows.includes(r))) return;
+    if (!data.title) throw new Error("YouTube did not return a title.");
+    if (!normalize(r.title)) r.title = data.title;
+    r.titleFetchStatus = "";
+  } catch (e) {
+    if (token !== r.titleFetchToken || !addOpen || (single !== r && !bulkRows.includes(r))) return;
+    r.titleFetchStatus = "Could not fetch title. Enter it manually.";
+  }
+  render();
+}
 function fieldsFor(r){
+  const title = el("input", { value: r.title, placeholder: "Video title", autocomplete: "off",
+    oninput: e => { r.title = e.target.value; } });
+  const url = el("input", { value: r.url, type: "url", inputmode: "url", placeholder: "https://www.youtube.com/watch?v=…",
+    oninput: e => { r.url = e.target.value; },
+    onchange: e => { r.url = e.target.value; fetchYouTubeTitle(r, e.target.value); },
+    onpaste: e => { setTimeout(() => { r.url = e.target.value; fetchYouTubeTitle(r, e.target.value); }, 0); } });
   return [
     el("label", { class: "full" }, "Title",
-      el("input", { value: r.title, placeholder: "Video title", autocomplete: "off", oninput: e => { r.title = e.target.value; } })),
+      title,
+      el("span", { class: "hint", role: "status", text: r.titleFetchStatus })),
     el("label", { class: "full" }, "YouTube link",
-      el("input", { value: r.url, type: "url", inputmode: "url", placeholder: "https://www.youtube.com/watch?v=…", oninput: e => { r.url = e.target.value; } })),
+      url),
     picker(r, "section"),
     ...(r.sectionId ? [picker(r, "playlist")] : []),
     picker(r, "status")
