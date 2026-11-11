@@ -1,5 +1,6 @@
 const KEY = "video-library-v2";
 const OLD = "video-library-v1";
+const YT_API_KEY = "yt-api-key";
 const NEW = "__new__";
 const PALETTE = ["c0", "c1", "c2", "c3"];
 
@@ -10,6 +11,13 @@ let addMode = "single";
 let presetFor = { sectionId: "", playlistId: "" };
 let single = null;
 let bulkRows = [];
+let playlistImportDefaults = null;
+let playlistImportUrl = "";
+let playlistImportMessage = "";
+let playlistImportNeedsKey = false;
+let playlistImporting = false;
+let playlistImportToken = 0;
+let apiKeyFeedback = "";
 let formError = "";
 let flash = "";
 
@@ -79,6 +87,18 @@ function load(){
 function save(){
   ensure(db);
   try { localStorage.setItem(KEY, JSON.stringify(db)); } catch (e) {}
+}
+function readYouTubeApiKey(){
+  try { return { key: localStorage.getItem(YT_API_KEY) || "", error: false }; }
+  catch (e) { return { key: "", error: true }; }
+}
+function writeYouTubeApiKey(value){
+  try { localStorage.setItem(YT_API_KEY, value); return true; }
+  catch (e) { return false; }
+}
+function removeYouTubeApiKey(){
+  try { localStorage.removeItem(YT_API_KEY); return true; }
+  catch (e) { return false; }
 }
 
 /* ---------- helpers ---------- */
@@ -287,6 +307,9 @@ function openAdd(sectionId, playlistId){
   addOpen = true; addMode = "single";
   presetFor = { sectionId: sectionId || "", playlistId: playlistId || "" };
   single = newRow(); bulkRows = [newRow()];
+  playlistImportDefaults = newRow();
+  playlistImportUrl = ""; playlistImportMessage = ""; playlistImportNeedsKey = false;
+  playlistImporting = false; playlistImportToken++;
   formError = ""; flash = "";
   render();
 }
@@ -299,7 +322,9 @@ function addModule(sectionId, playlistId){
   return el("section", { class: "card", "aria-label": "Add videos" },
     el("div", { class: "add-head" },
       el("div", { class: "seg-group", role: "group", "aria-label": "Add mode" }, mode("single", "Single video"), mode("bulk", "Bulk add")),
-      el("button", { type: "button", class: "ghost small", text: "Close", onclick: () => { addOpen = false; render(); } })),
+      el("button", { type: "button", class: "ghost small", text: "Close", onclick: () => {
+        addOpen = false; playlistImportToken++; playlistImporting = false; render();
+      } })),
     el("div", { class: "ok", text: msg }),
     addMode === "single" ? singleBody() : bulkBody());
 }
@@ -319,13 +344,143 @@ function singleBody(){
 }
 function bulkBody(){
   return el("div", { class: "stack" },
+    playlistImportRow(),
     el("div", { class: "stack" }, ...bulkRows.map((r, i) => bulkRow(r, i))),
     el("div", { class: "err", role: "alert", text: formError }),
     el("div", { class: "btns" },
       el("button", { type: "button", class: "ghost", text: "+ Add another video",
         onclick: () => { bulkRows.push(newRow()); render(); } }),
-      el("button", { type: "button", text: "Add all videos",
+      el("button", { type: "button", text: "Add all videos", disabled: playlistImporting ? "" : null,
         onclick: () => { if (saveRows(bulkRows)){ bulkRows = [newRow()]; flash = "Saved."; } render(); } })));
+}
+function parsePlaylistId(value){
+  const input = normalize(value);
+  if (/^[A-Za-z0-9_-]+$/.test(input)) return input;
+  try {
+    const url = new URL(input);
+    const host = url.hostname.toLowerCase();
+    if (url.protocol !== "http:" && url.protocol !== "https:") return "";
+    if (!["youtube.com", "www.youtube.com", "m.youtube.com", "youtu.be", "www.youtu.be"].includes(host)) return "";
+    return url.searchParams.get("list") || "";
+  } catch (e) {
+    return "";
+  }
+}
+function importedRow(item, defaults){
+  const snippet = item.snippet || {};
+  const row = newRow();
+  row.title = snippet.title || "";
+  row.url = "https://www.youtube.com/watch?v=" + item.snippet.resourceId.videoId;
+  row.sectionId = defaults.sectionId;
+  row.sectionNew = defaults.sectionNew;
+  row.playlistId = defaults.playlistId;
+  row.playlistNew = defaults.playlistNew;
+  row.statusId = defaults.statusId;
+  row.statusNew = defaults.statusNew;
+  return row;
+}
+function playlistApiError(data, response){
+  const error = data && data.error;
+  const reason = error && error.errors && error.errors[0] && error.errors[0].reason || "";
+  if (/quota|dailylimit|ratelimit/i.test(reason)) return "YouTube API quota exceeded. Try again later.";
+  if (/keyinvalid|keyexpired|keyunregistered|accessnotconfigured/i.test(reason) ||
+      /api key.*not valid|invalid api key/i.test(error && error.message || "") || response.status === 401)
+    return "YouTube API key was rejected. Check your key in Settings.";
+  if (response.status === 403) return "YouTube rejected the API key or request. Check the key and YouTube Data API access.";
+  if (error && error.message) return "Playlist import failed: " + error.message;
+  return "Playlist import failed. Check the playlist link and try again.";
+}
+async function importPlaylistRows(){
+  const keyInfo = readYouTubeApiKey();
+  if (keyInfo.error || !keyInfo.key){
+    playlistImportNeedsKey = true;
+    playlistImportMessage = "Add your YouTube API key in Settings to import playlists";
+    render();
+    return;
+  }
+  const playlistId = parsePlaylistId(playlistImportUrl);
+  if (!playlistId){
+    playlistImportNeedsKey = false;
+    playlistImportMessage = "Enter a valid YouTube playlist link or playlist ID.";
+    render();
+    return;
+  }
+  const token = ++playlistImportToken;
+  const defaults = { ...playlistImportDefaults };
+  playlistImportNeedsKey = false;
+  playlistImporting = true;
+  playlistImportMessage = "Importing…";
+  render();
+  try {
+    const items = [];
+    let pageToken = "";
+    do {
+      const params = new URLSearchParams({
+        part: "snippet",
+        maxResults: "50",
+        playlistId,
+        key: keyInfo.key
+      });
+      if (pageToken) params.set("pageToken", pageToken);
+      const response = await fetch("https://www.googleapis.com/youtube/v3/playlistItems?" + params.toString());
+      let data;
+      try { data = await response.json(); }
+      catch (e) { throw new Error("YouTube returned an unreadable response."); }
+      if (!response.ok || data.error) throw new Error(playlistApiError(data, response));
+      items.push(...(data.items || []));
+      pageToken = data.nextPageToken || "";
+      if (token !== playlistImportToken) return;
+    } while (pageToken);
+    if (!addOpen || token !== playlistImportToken) return;
+    const usable = items.filter(item => {
+      const snippet = item.snippet || {};
+      return snippet.title && snippet.title !== "Deleted video" && snippet.title !== "Private video" &&
+        snippet.resourceId && snippet.resourceId.videoId;
+    });
+    bulkRows.push(...usable.map(item => importedRow(item, defaults)));
+    playlistImportMessage = `Imported ${usable.length} videos. Review them below.`;
+  } catch (e) {
+    if (!addOpen || token !== playlistImportToken) return;
+    playlistImportMessage = e instanceof TypeError
+      ? "Network error while importing playlist. Check your connection."
+      : e.message;
+  } finally {
+    if (token === playlistImportToken){
+      playlistImporting = false;
+      render();
+    }
+  }
+}
+function playlistImportRow(){
+  const keyInfo = readYouTubeApiKey();
+  const hasKey = !keyInfo.error && !!keyInfo.key;
+  const input = el("input", { type: "url", value: playlistImportUrl,
+    placeholder: "YouTube playlist link or ID", "aria-label": "YouTube playlist link or ID",
+    oninput: e => { playlistImportUrl = e.target.value; } });
+  const message = playlistImportMessage
+    ? el("div", { class: playlistImportNeedsKey ? "hint" : (playlistImporting ? "hint" : "err"), role: "status", text: playlistImportMessage })
+    : null;
+  const goToSettings = playlistImportNeedsKey
+    ? el("a", { class: "btn small", href: "#prefs", text: "Open Settings" })
+    : null;
+  const importButton = el("button", {
+    type: "button",
+    class: "ghost small",
+    text: playlistImporting ? "Importing…" : "Import",
+    disabled: playlistImporting ? "" : null,
+    style: hasKey ? null : "opacity:.5",
+    onclick: importPlaylistRows
+  });
+  return el("div", { class: "bulk-row playlist-import" },
+    el("strong", { text: "Import playlist" }),
+    el("p", { class: "hint", text: "Apply these settings to imported videos:" }),
+    el("div", { class: "fields" },
+      picker(playlistImportDefaults, "section"),
+      picker(playlistImportDefaults, "playlist"),
+      picker(playlistImportDefaults, "status")),
+    el("div", { class: "rowline" }, input, importButton),
+    message,
+    goToSettings);
 }
 function bulkRow(r, i){
   const head = el("button", { type: "button", class: "row-head", "aria-expanded": String(!r.collapsed),
@@ -456,7 +611,9 @@ function render(){
   }
   app.replaceChildren(view);
 }
-window.addEventListener("hashchange", () => { addOpen = false; formError = ""; render(); });
+window.addEventListener("hashchange", () => {
+  addOpen = false; playlistImportToken++; playlistImporting = false; formError = ""; render();
+});
 
 /* ---------- home ---------- */
 function homeView(){
@@ -513,6 +670,36 @@ function playlistView(p){
 /* ---------- settings ---------- */
 function prefsView(){
   const wrap = el("div", { class: "stack" });
+  const keyInfo = readYouTubeApiKey();
+  const keyInput = el("input", {
+    type: "password",
+    autocomplete: "new-password",
+    placeholder: keyInfo.key ? "Saved key ending in " + keyInfo.key.slice(-4) : "Enter your YouTube Data API v3 key",
+    "aria-label": "YouTube Data API key"
+  });
+  const keyStatus = keyInfo.error
+    ? "Could not access API key storage in this browser."
+    : keyInfo.key
+      ? "Key saved in this browser (last 4: " + keyInfo.key.slice(-4) + ")"
+      : "No key saved";
+  const keyMessage = el("div", { class: "hint", role: "status",
+    text: apiKeyFeedback || keyStatus });
+  wrap.append(card("YouTube API key",
+    el("p", { class: "hint", text: "The key is stored only in this browser. Restrict it to the YouTube Data API v3 in Google Cloud." }),
+    el("label", null, "API key", keyInput),
+    el("div", { class: "btns" },
+      el("button", { type: "button", class: "small", text: "Save", onclick: () => {
+        const value = keyInput.value.trim();
+        if (!value) apiKeyFeedback = "Enter an API key first.";
+        else if (writeYouTubeApiKey(value)) apiKeyFeedback = "Key saved in this browser (last 4: " + value.slice(-4) + ")";
+        else apiKeyFeedback = "Could not save the API key in this browser.";
+        render();
+      } }),
+      el("button", { type: "button", class: "ghost small", text: "Remove", onclick: () => {
+        apiKeyFeedback = removeYouTubeApiKey() ? "No key saved" : "Could not remove the API key from this browser.";
+        render();
+      } })),
+    keyMessage));
 
   const secList = el("ul", { class: "list" });
   db.sections.forEach((s, idx) => {
