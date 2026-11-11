@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Video Library</title>
+<meta name="theme-color" content="#b4442b">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Videos">
+<link rel="manifest" href="manifest.json">
+<link rel="apple-touch-icon" href="icon-192.png">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="wrap">
+  <header class="top">
+    <h1 id="title">Video Library</h1>
+    <nav id="nav"></nav>
+  </header>
+  <main id="app" class="stack"></main>
+  <footer class="foot">
+    <span>Made by <strong>Lakshay Mahajan</strong></span>
+    <nav aria-label="Links">
+      <a href="https://lakshaymahajan.com" target="_blank" rel="noopener noreferrer">Portfolio</a>
+      <a href="https://www.linkedin.com/in/lakshaymahajan25" target="_blank" rel="noopener noreferrer">LinkedIn</a>
+      <a href="https://x.com/lakshay2224" target="_blank" rel="noopener noreferrer">X</a>
+      <a href="https://www.instagram.com/lakshay_mahajan33" target="_blank" rel="noopener noreferrer">Instagram</a>
+      <a href="https://github.com/lakshay2425/video-library" target="_blank" rel="noopener noreferrer">GitHub</a>
+    </nav>
+  </footer>
+</div>
+<script src="app.js"></script>
+<script>
+  if ("serviceWorker" in navigator && location.protocol === "https:") {
+    navigator.serviceWorker.register("sw.js").catch(() => {});
+  }
+</script>
+</body>
+</html>
