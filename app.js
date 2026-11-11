@@ -41,6 +41,14 @@ function valid(p){
 function ensure(p){
   if (!Array.isArray(p.playlists)) p.playlists = [];
   p.videos.forEach(v => { if (!v.playlistId) v.playlistId = null; });
+  p.playlists.forEach(pl => {
+    const members = p.videos.filter(v => v.playlistId === pl.id).map(v => v.id);
+    const memberIds = new Set(members);
+    const ordered = Array.isArray(pl.videoOrder) ? pl.videoOrder.filter(id => memberIds.has(id)) : [];
+    const seen = new Set(ordered);
+    members.forEach(id => { if (!seen.has(id)){ ordered.push(id); seen.add(id); } });
+    pl.videoOrder = ordered;
+  });
   return p;
 }
 function load(){
@@ -69,6 +77,7 @@ function load(){
   db = defaults();
 }
 function save(){
+  ensure(db);
   try { localStorage.setItem(KEY, JSON.stringify(db)); } catch (e) {}
 }
 
@@ -295,31 +304,65 @@ function filterBar(){
       ...sortedStatuses().map(st => el("button", { type: "button", class: "chip", "aria-pressed": String(secFilter === st.id),
         onclick: () => { secFilter = st.id; render(); }, text: st.label }))));
 }
-function videoList(vids, emptyText){
+function videoList(vids, emptyText, playlist){
   const shown = vids
     .filter(v => secFilter === "all" || v.statusId === secFilter)
-    .sort((a, b) => statusIndex(a.statusId) - statusIndex(b.statusId) || a.title.localeCompare(b.title));
+    .sort(playlist
+      ? (a, b) => playlist.videoOrder.indexOf(a.id) - playlist.videoOrder.indexOf(b.id)
+      : (a, b) => statusIndex(a.statusId) - statusIndex(b.statusId) || a.title.localeCompare(b.title));
   const list = el("ul", { class: "card list", style: "padding:0 14px;gap:0" });
   if (!vids.length) list.append(el("li", { class: "empty", text: emptyText }));
   else if (!shown.length) list.append(el("li", { class: "empty", text: "Nothing with this status." }));
-  shown.forEach(v => list.append(videoRow(v)));
+  shown.forEach(v => list.append(videoRow(v, playlist)));
   return list;
 }
-function videoRow(v){
-  const st = el("select", { "aria-label": "Status for " + v.title,
+function reorderVideo(playlist, video, delta){
+  const index = playlist.videoOrder.indexOf(video.id);
+  const target = index + delta;
+  if (index < 0 || target < 0 || target >= playlist.videoOrder.length) return;
+  [playlist.videoOrder[index], playlist.videoOrder[target]] =
+    [playlist.videoOrder[target], playlist.videoOrder[index]];
+  save(); render();
+}
+function videoRow(v, playlist){
+  const st = el("select", { "aria-label": "Edit watching status for " + v.title,
     onchange: e => { v.statusId = e.target.value; save(); render(); } },
     ...sortedStatuses().map(s => el("option", { value: s.id, text: s.label, ...(s.id === v.statusId ? { selected: "selected" } : {}) })));
-  const options = v.sectionId ? playlistsIn(v.sectionId) : [];
-  const pl = options.length ? el("select", { "aria-label": "Playlist for " + v.title,
-    onchange: e => { v.playlistId = e.target.value || null; save(); render(); } },
-    el("option", { value: "", text: "No playlist" }),
-    ...options.map(p => el("option", { value: p.id, text: p.name, ...(p.id === v.playlistId ? { selected: "selected" } : {}) }))) : null;
-  const del = dangerBtn("Delete", () => { db.videos = db.videos.filter(x => x.id !== v.id); save(); render(); });
+  const move = el("select", { "aria-label": "Move to another playlist for " + v.title,
+    onchange: e => {
+      const target = playlistOf(e.target.value);
+      if (target){ v.playlistId = target.id; v.sectionId = target.sectionId; }
+      else v.playlistId = null;
+      save(); render();
+    } },
+    el("option", { value: "", text: "No playlist", ...(!v.playlistId ? { selected: "selected" } : {}) }),
+    ...db.playlists.map(p => el("option", {
+      value: p.id,
+      text: (sectionOf(p.sectionId) ? sectionOf(p.sectionId).name + " — " : "") + p.name,
+      ...(p.id === v.playlistId ? { selected: "selected" } : {})
+    })));
+  const actions = el("details", { class: "video-menu" },
+    el("summary", { "aria-label": "Video actions for " + v.title, title: "Video actions", text: "⋮" }),
+    el("div", { class: "video-menu-panel" },
+      el("label", { class: "video-menu-action" }, "Move to another playlist", move),
+      el("label", { class: "video-menu-action" }, "Edit watching status", st),
+      playlist ? el("div", { class: "video-menu-action" },
+        el("span", { text: "Reorder in playlist" }),
+        el("div", { class: "video-reorder" },
+          el("button", { type: "button", class: "ghost small", text: "Move up",
+            disabled: playlist.videoOrder.indexOf(v.id) === 0 ? "" : null,
+            onclick: () => reorderVideo(playlist, v, -1) }),
+          el("button", { type: "button", class: "ghost small", text: "Move down",
+            disabled: playlist.videoOrder.indexOf(v.id) === playlist.videoOrder.length - 1 ? "" : null,
+            onclick: () => reorderVideo(playlist, v, 1) }))) : null,
+      el("div", { class: "video-menu-action" }, dangerBtn("Delete", () => {
+        db.videos = db.videos.filter(x => x.id !== v.id); save(); render();
+      }))));
   return el("li", { class: "row" },
     el("div", { class: "main" },
       el("a", { class: "vtitle", href: v.url, target: "_blank", rel: "noopener noreferrer", text: v.title }),
       el("span", { class: "pill", style: "--pc:" + pillColorFor(v.statusId), text: (statusOf(v.statusId) || { label: "No status" }).label })),
-    el("div", { class: "ops" }, st, pl, del));
+    el("div", { class: "ops" }, actions));
 }
 function tile(href, colorIdx, sub, name){
   return el("a", { class: "tile", href, style: "--tile:var(--" + PALETTE[colorIdx % 4] + ")" },
@@ -414,7 +457,7 @@ function sectionView(sec){
 function playlistView(p){
   const wrap = el("div", { class: "stack" });
   const vids = db.videos.filter(v => v.playlistId === p.id);
-  wrap.append(filterBar(), videoList(vids, "No videos in this playlist yet. Add one below."));
+  wrap.append(filterBar(), videoList(vids, "No videos in this playlist yet. Add one below.", p));
   wrap.append(addModule(p.sectionId, p.id));
   return wrap;
 }

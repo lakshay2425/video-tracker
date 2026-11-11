@@ -7,6 +7,7 @@ A lightweight, browser-based video tracker. Organize video links into sections a
 - Add videos individually or in bulk.
 - Group videos into customizable sections and playlists.
 - Organize videos with customizable statuses such as Watching, To watch, Watched, and Rewatch.
+- Use each video's actions menu to change its playlist or watching status; reorder videos from within a playlist.
 - Filter lists by status.
 - Export and import your library to back it up or move it between browsers and devices.
 - Install as a progressive web app in browsers that support it.
